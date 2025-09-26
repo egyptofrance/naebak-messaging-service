@@ -1,0 +1,24 @@
+2025-09-26 04:53:51,170 - INFO - 🌐 Starting Naebak Messaging Service Tests
+2025-09-26 04:53:51,170 - INFO - ============================================================
+2025-09-26 04:53:51,170 - WARNING - ⚠️  File Structure: Missing files: ['messaging.py', 'constants.py', 'routing_system.py', 'security_middleware.py']. Present: ['app.py', 'config.py', 'requirements.txt']
+2025-09-26 04:53:51,197 - INFO - ✅ Python Syntax: All 9 Python files have valid syntax
+2025-09-26 04:53:51,280 - INFO - ✅ Flask Dependencies: All key dependencies available: 3 modules
+2025-09-26 04:53:51,280 - INFO - ✅ Gateway Configuration: Configuration elements found: ['Config class defined', 'Secret key configuration', 'Debug configuration']
+2025-09-26 04:53:51,280 - ERROR - ❌ Routing System: routing_system.py not found
+2025-09-26 04:53:51,280 - ERROR - ❌ Security Middleware: security_middleware.py not found
+2025-09-26 04:53:51,280 - ERROR - ❌ Main Gateway App: messaging.py not found
+2025-09-26 04:53:51,281 - WARNING - ⚠️  Startup Script: Basic startup features: ['Main execution block', 'Gateway import', 'Host/Port configuration']
+2025-09-26 04:53:51,283 - WARNING - ⚠️  Code Quality: Quality score: 61.4%. Metrics: {'total_lines': 2659, 'python_files': 6, 'docstrings': 145, 'comments': 159, 'functions': 72, 'classes': 11}
+2025-09-26 04:53:51,283 - INFO - ============================================================
+2025-09-26 04:53:51,283 - INFO - 📋 GATEWAY SERVICE TEST SUMMARY
+2025-09-26 04:53:51,283 - INFO - ============================================================
+2025-09-26 04:53:51,283 - INFO - 🌐 Service: naebak-messaging-service
+2025-09-26 04:53:51,283 - INFO - 📅 Timestamp: 2025-09-26T04:53:51.170101
+2025-09-26 04:53:51,283 - INFO - 📊 Total Tests: 9
+2025-09-26 04:53:51,283 - INFO - ✅ Passed: 3
+2025-09-26 04:53:51,283 - INFO - ❌ Failed: 3
+2025-09-26 04:53:51,283 - INFO - 📈 Success Rate: 33.3%
+2025-09-26 04:53:51,283 - INFO - 🎯 Service Status: FAILED
+2025-09-26 04:53:51,283 - INFO - 📄 Detailed results saved to /home/ubuntu/naebak-messaging-service/tests/test_results.json
+2025-09-26 04:53:51,283 - INFO - 📋 Summary report saved to /home/ubuntu/naebak-messaging-service/tests/test_summary.md
+2025-09-26 04:53:51,283 - INFO - ============================================================
