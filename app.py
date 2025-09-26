@@ -1,346 +1,597 @@
 """
-Naebak Messaging Service - Real-time Communication Platform
+Naebak Messaging Service
 
-This is the main application file for the Naebak Messaging Service, which provides real-time
-messaging capabilities for the Naebak platform. The service enables secure communication
-between citizens, candidates, and representatives using WebSocket technology with Redis
-for message persistence and scalability.
+A comprehensive Flask-based messaging service for real-time communication 
+between users in the Naebak platform. This service handles direct messages, 
+group chats, and support conversations with full WebSocket support.
 
-Key Features:
-- Real-time messaging using Socket.IO
-- Message persistence with Redis
-- User authentication and session management
-- Chat room functionality
-- Message history and retrieval
-- Cross-origin resource sharing (CORS) support
+Features:
+- Real-time messaging with WebSocket support
+- Direct messages between citizens and representatives
+- Group chat functionality for representatives
+- Support conversations with admins
+- Message history and persistence with Redis caching
+- User presence and typing indicators
+- File and image sharing capabilities
+- Rate limiting and security features
+- Integration with naebak auth service
 
-Architecture:
-The service implements a WebSocket-based messaging system with Redis as the message
-broker and persistence layer. It supports both one-to-one and group messaging patterns
-while maintaining message history for offline users.
+API Endpoints:
+- POST /api/v1/chats - Create new chat
+- GET /api/v1/chats - Get user's chats
+- GET /api/v1/chats/{id}/messages - Get chat messages
+- POST /api/v1/chats/{id}/messages - Send message
+- WebSocket /socket.io - Real-time messaging
+
+Database Models:
+- Chat: Represents a conversation
+- Participant: Links users to chats
+- Message: Individual messages in chats
+- MessageThread: Organizes related messages
 """
 
 from flask import Flask, request, jsonify
-from flask_socketio import SocketIO, emit
 from flask_cors import CORS
-import redis
-import json
+from flask_socketio import SocketIO
+from flask_jwt_extended import JWTManager
+import os
 from datetime import datetime
 import logging
-from config import get_config
 
-# Setup application
-app = Flask(__name__)
-config = get_config()
-app.config.from_object(config)
+# Import our modules
+from models import db, init_db, Chat, Participant, Message, MessageType, MessageStatus, ChatType, get_user_chats
+from websocket_handlers import init_socketio
+from auth_utils import require_auth, get_current_user, check_user_permissions, validate_chat_participants, validate_message_content
+from redis_manager import get_redis_manager
 
-# Setup CORS for Flask and SocketIO
-CORS(app, origins=app.config["CORS_ALLOWED_ORIGINS"])
-socketio = SocketIO(app, cors_allowed_origins=app.config["CORS_ALLOWED_ORIGINS"], message_queue=app.config["REDIS_URL"])
-
-# Setup Redis connection
-try:
-    redis_client = redis.from_url(app.config["REDIS_URL"])
-    redis_client.ping()
-    print("Connected to Redis successfully!")
-except redis.exceptions.ConnectionError as e:
-    print(f"Could not connect to Redis: {e}")
-    redis_client = None
-
-# Setup Logging
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-class Message:
-    """
-    Represents a message in the Naebak messaging system.
-    
-    This class encapsulates all message data including sender, recipient, content,
-    and timestamp information. It provides methods for serialization and data
-    validation to ensure message integrity across the platform.
-    
-    Attributes:
-        sender_id (str): Unique identifier of the message sender.
-        recipient_id (str): Unique identifier of the message recipient.
-        content (str): The actual message content/text.
-        timestamp (str): ISO format timestamp of when the message was created.
-    
-    Message Flow:
-        1. Message created with sender, recipient, and content
-        2. Timestamp automatically assigned if not provided
-        3. Message serialized to dictionary for storage/transmission
-        4. Message stored in Redis for persistence
-        5. Message delivered to recipient via WebSocket
-    """
-    
-    def __init__(self, sender_id, recipient_id, content, timestamp=None):
-        """
-        Initialize a new message instance.
-        
-        Args:
-            sender_id (str): The ID of the user sending the message.
-            recipient_id (str): The ID of the user receiving the message.
-            content (str): The message content/text.
-            timestamp (str, optional): Message timestamp. Defaults to current UTC time.
-        """
-        self.sender_id = sender_id
-        self.recipient_id = recipient_id
-        self.content = content
-        self.timestamp = timestamp if timestamp else datetime.utcnow().isoformat()
+# Initialize Flask app
+app = Flask(__name__)
+CORS(app, origins="*")
 
-    def to_dict(self):
-        """
-        Convert message to dictionary format for JSON serialization.
-        
-        Returns:
-            dict: Dictionary representation of the message with all attributes.
-        """
-        return {
-            "sender_id": self.sender_id,
-            "recipient_id": self.recipient_id,
-            "content": self.content,
-            "timestamp": self.timestamp
-        }
+# Configuration from naebak-almakhzan specifications
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'naebak-messaging-secret-key-2024')
+app.config['DEBUG'] = os.getenv('DEBUG', 'False').lower() == 'true'
 
-@app.route("/health", methods=["GET"])
+# Database configuration (PostgreSQL from naebak-almakhzan)
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv(
+    'DATABASE_URL',
+    'postgresql://messages_user:messages_pass@10.128.0.13:5432/naebak_messages'
+)
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_size': 10,
+    'pool_recycle': 120,
+    'pool_pre_ping': True
+}
+
+# JWT configuration
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'naebak-jwt-secret-2024')
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = False
+
+# Initialize extensions
+jwt = JWTManager(app)
+init_db(app)
+socketio = init_socketio(app)
+redis_manager = get_redis_manager()
+
+@app.route('/')
 def health_check():
     """
-    Health check endpoint for service monitoring.
-    
-    This endpoint provides comprehensive health status including Redis connectivity
-    and service version information. It's used by load balancers, monitoring systems,
-    and the API gateway to verify service availability.
+    Health check endpoint to verify service is running.
     
     Returns:
-        JSON response with service health information including:
-        - Service status and version
-        - Redis connectivity status
-        - Timestamp of the health check
-        
-    Health Indicators:
-        - Service status: Always "ok" if the service is running
-        - Redis status: "connected", "disconnected", or error details
-        - Version: Current service version for deployment tracking
+        dict: Service status and comprehensive information
     """
-    redis_status = "disconnected"
-    if redis_client:
+    try:
+        # Check database connection
+        db_status = True
         try:
-            redis_client.ping()
-            redis_status = "connected"
-        except Exception as e:
-            redis_status = f"error: {e}"
-
-    return jsonify({
-        "status": "ok", 
-        "service": "naebak-messaging-service", 
-        "version": "1.0.0", 
-        "redis_status": redis_status,
-        "timestamp": datetime.utcnow().isoformat()
-    }), 200
-
-@socketio.on("connect")
-def handle_connect():
-    """
-    Handle new WebSocket connections from clients.
-    
-    This function manages the initial connection process, including user authentication
-    and session setup. It validates the user_id parameter and establishes the
-    connection context for subsequent messaging operations.
-    
-    Connection Flow:
-        1. Extract user_id from connection parameters
-        2. Validate user authentication (can be enhanced with JWT)
-        3. Log connection event for monitoring
-        4. Optionally store session mapping in Redis
+            db.session.execute('SELECT 1')
+        except Exception:
+            db_status = False
         
-    Authentication:
-        Currently uses simple user_id parameter validation.
-        Can be enhanced with JWT token verification for production use.
+        # Check Redis connection
+        redis_status = redis_manager.health_check()
+        
+        return {
+            'service': 'naebak-messaging-service',
+            'status': 'healthy' if db_status and all(redis_status.values()) else 'degraded',
+            'version': '2.0.0',
+            'timestamp': datetime.utcnow().isoformat(),
+            'port': int(os.getenv('PORT', 8004)),
+            'database': {
+                'status': 'connected' if db_status else 'disconnected',
+                'type': 'PostgreSQL'
+            },
+            'redis': {
+                'cache_client': 'connected' if redis_status['cache_client'] else 'disconnected',
+                'pubsub_client': 'connected' if redis_status['pubsub_client'] else 'disconnected'
+            },
+            'features': [
+                'Real-time messaging via WebSocket',
+                'Direct messages between users',
+                'Group chats for representatives',
+                'Support conversations',
+                'Message persistence with PostgreSQL',
+                'Redis caching and pub/sub',
+                'File and image sharing',
+                'Typing indicators',
+                'User presence tracking',
+                'Rate limiting',
+                'JWT authentication integration'
+            ],
+            'websocket_endpoint': '/socket.io',
+            'api_base': '/api/v1'
+        }
+    except Exception as e:
+        logger.error(f"Health check error: {str(e)}")
+        return {
+            'service': 'naebak-messaging-service',
+            'status': 'error',
+            'error': str(e)
+        }, 500
+
+@app.route('/api/v1/chats', methods=['GET'])
+@require_auth
+def get_chats():
+    """
+    Get all chats for the authenticated user with pagination and filtering.
+    
+    Query Parameters:
+        page (int): Page number for pagination (default: 1)
+        per_page (int): Items per page (default: 20, max: 100)
+        search (str): Search term for chat names
+        chat_type (str): Filter by chat type (direct, group, support)
         
     Returns:
-        bool: False to reject connection if user_id is missing, True otherwise.
+        dict: List of user's chats with pagination info and unread counts
     """
-    user_id = request.args.get("user_id")  # Can use JWT here for identity verification
-    if not user_id:
-        logger.warning("Client connected without user_id.")
-        return False  # Reject connection if no user_id provided
-    
-    logger.info(f"Client {user_id} connected. SID: {request.sid}")
-    # Can link SID to user_id in Redis here for session management
-    # redis_client.set(f"user_sid:{user_id}", request.sid)
+    try:
+        current_user = get_current_user()
+        user_id = current_user['user_id']
+        
+        # Get query parameters
+        page = request.args.get('page', 1, type=int)
+        per_page = min(request.args.get('per_page', 20, type=int), 100)
+        search = request.args.get('search', '').strip()
+        chat_type = request.args.get('chat_type', '').strip()
+        
+        # Get chats from database with caching
+        chats_data = get_user_chats(user_id, page, per_page)
+        
+        # Apply filters if provided
+        if search or chat_type:
+            filtered_chats = []
+            for chat in chats_data['chats']:
+                if search and search.lower() not in (chat.get('name', '') or '').lower():
+                    continue
+                if chat_type and chat.get('chat_type') != chat_type:
+                    continue
+                filtered_chats.append(chat)
+            chats_data['chats'] = filtered_chats
+        
+        # Add cached data where available
+        for chat in chats_data['chats']:
+            chat_id = chat['id']
+            
+            # Get last message from cache
+            cached_last_message = redis_manager.get_chat_last_message(chat_id)
+            if cached_last_message:
+                chat['last_message'] = cached_last_message
+            
+            # Get unread count
+            chat['unread_count'] = Chat.query.get(chat_id).get_unread_count(user_id) if Chat.query.get(chat_id) else 0
+        
+        logger.info(f"Retrieved {len(chats_data['chats'])} chats for user {user_id}")
+        
+        return {
+            'success': True,
+            'data': chats_data,
+            'message': f'تم جلب {len(chats_data["chats"])} محادثة بنجاح'
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting chats for user: {str(e)}")
+        return {
+            'success': False,
+            'message': 'خطأ في جلب المحادثات',
+            'error': str(e)
+        }, 500
 
-@socketio.on("disconnect")
-def handle_disconnect():
+@app.route('/api/v1/chats', methods=['POST'])
+@require_auth
+def create_chat():
     """
-    Handle WebSocket disconnections from clients.
+    Create a new chat conversation.
     
-    This function manages the cleanup process when clients disconnect,
-    including session cleanup and logging for monitoring purposes.
-    
-    Cleanup Operations:
-        1. Extract user_id from connection context
-        2. Log disconnection event
-        3. Clean up session data from Redis
-        4. Update user presence status
+    Request Body:
+        participants (list): List of user IDs to include in chat
+        name (str): Optional name for group chats
+        chat_type (str): Type of chat (direct, group, support) - default: direct
+        
+    Returns:
+        dict: Created chat information
     """
-    user_id = request.args.get("user_id")
-    logger.info(f"Client {user_id} disconnected. SID: {request.sid}")
-    # Can remove SID to user_id mapping from Redis here
-    # if redis_client and user_id:
-    #     redis_client.delete(f"user_sid:{user_id}")
+    try:
+        current_user = get_current_user()
+        user_id = current_user['user_id']
+        
+        data = request.get_json()
+        if not data:
+            return {
+                'success': False,
+                'message': 'بيانات الطلب مطلوبة'
+            }, 400
+        
+        participants = data.get('participants', [])
+        chat_name = data.get('name', '').strip()
+        chat_type = data.get('chat_type', 'direct').strip()
+        
+        # Validate input
+        if not participants:
+            return {
+                'success': False,
+                'message': 'قائمة المشاركين مطلوبة'
+            }, 400
+        
+        # Add current user to participants if not included
+        if user_id not in participants:
+            participants.append(user_id)
+        
+        # Validate chat type
+        try:
+            chat_type_enum = ChatType(chat_type)
+        except ValueError:
+            return {
+                'success': False,
+                'message': 'نوع المحادثة غير صحيح'
+            }, 400
+        
+        # Check permissions
+        if chat_type == 'group' and not check_user_permissions(user_id, 'create_group_chat'):
+            return {
+                'success': False,
+                'message': 'غير مصرح بإنشاء محادثات جماعية'
+            }, 403
+        
+        # Validate participants
+        if not validate_chat_participants(user_id, participants):
+            return {
+                'success': False,
+                'message': 'غير مصرح بإنشاء محادثة مع هؤلاء المشاركين'
+            }, 403
+        
+        # Check if direct chat already exists
+        if chat_type == 'direct' and len(participants) == 2:
+            existing_chat = db.session.query(Chat).join(Participant).filter(
+                Chat.chat_type == ChatType.DIRECT,
+                Chat.is_active == True
+            ).group_by(Chat.id).having(
+                db.func.count(Participant.user_id) == 2
+            ).first()
+            
+            if existing_chat:
+                # Check if both users are participants
+                participant_ids = [p.user_id for p in existing_chat.participants]
+                if set(participants) == set(participant_ids):
+                    return {
+                        'success': True,
+                        'message': 'المحادثة موجودة بالفعل',
+                        'data': {
+                            'chat': existing_chat.to_dict()
+                        }
+                    }
+        
+        # Create new chat
+        new_chat = Chat(
+            name=chat_name if chat_name else None,
+            chat_type=chat_type_enum
+        )
+        db.session.add(new_chat)
+        db.session.flush()  # Get the chat ID
+        
+        # Add participants
+        for participant_id in participants:
+            participant = Participant(
+                chat_id=new_chat.id,
+                user_id=participant_id,
+                is_admin=(participant_id == user_id)  # Creator is admin
+            )
+            db.session.add(participant)
+        
+        db.session.commit()
+        
+        # Cache the new chat
+        chat_data = new_chat.to_dict()
+        redis_manager.increment_chat_stats(new_chat.id, 'users_joined')
+        
+        logger.info(f"Chat {new_chat.id} created by user {user_id} with {len(participants)} participants")
+        
+        return {
+            'success': True,
+            'message': 'تم إنشاء المحادثة بنجاح',
+            'data': {
+                'chat': chat_data
+            }
+        }, 201
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error creating chat: {str(e)}")
+        return {
+            'success': False,
+            'message': 'خطأ في إنشاء المحادثة',
+            'error': str(e)
+        }, 500
 
-@socketio.on("send_message")
-def handle_send_message(data):
+@app.route('/api/v1/chats/<chat_id>/messages', methods=['GET'])
+@require_auth
+def get_messages(chat_id):
     """
-    Handle incoming messages from clients and route them to recipients.
+    Get messages for a specific chat with pagination.
     
-    This function processes message sending requests, validates the data,
-    stores messages for persistence, and delivers them to the intended
-    recipients in real-time.
-    
-    Args:
-        data (dict): Message data containing recipient_id and content.
+    Path Parameters:
+        chat_id (str): Chat identifier
         
-    Message Processing Flow:
-        1. Extract sender_id from connection context
-        2. Validate message data (recipient, content)
-        3. Create Message object with timestamp
-        4. Store message in Redis for persistence
-        5. Deliver message to recipient via WebSocket
-        6. Send confirmation to sender
+    Query Parameters:
+        page (int): Page number for pagination (default: 1)
+        per_page (int): Messages per page (default: 50, max: 100)
+        before (str): Get messages before this timestamp (ISO format)
         
-    Data Validation:
-        - sender_id: Must be present in connection context
-        - recipient_id: Must be provided in message data
-        - content: Must be non-empty string
-        
-    Storage Strategy:
-        - Messages stored in Redis lists by chat pair
-        - Chat key format: "chat:{min_user_id}_{max_user_id}"
-        - Limited to last 100 messages per chat for performance
-        
-    Delivery Mechanism:
-        - Uses Socket.IO rooms for targeted message delivery
-        - Recipient receives "receive_message" event
-        - Sender receives "message_sent" confirmation
+    Returns:
+        dict: List of messages in the chat with pagination
     """
-    sender_id = request.args.get("user_id")
-    recipient_id = data.get("recipient_id")
-    content = data.get("content")
-
-    if not all([sender_id, recipient_id, content]):
-        logger.error(f"Invalid message data from {sender_id}: {data}")
-        emit("message_error", {"error": "Missing required fields"})
-        return
-
-    message = Message(sender_id, recipient_id, content)
-    logger.info(f"Message from {sender_id} to {recipient_id}: {content}")
-
-    # Store message temporarily in Redis (simple example)
-    if redis_client:
-        chat_key = f"chat:{min(sender_id, recipient_id)}_{max(sender_id, recipient_id)}"
-        redis_client.rpush(chat_key, json.dumps(message.to_dict()))
-        redis_client.ltrim(chat_key, -100, -1)  # Keep last 100 messages
-
-    # Send message to recipient (can be improved using Socket.IO rooms)
-    # Currently assumes recipient is connected to same server and accessible by user_id
-    # In production, would need pub/sub system or complex Socket.IO rooms
-    emit("receive_message", message.to_dict(), room=recipient_id)  # Send to user_id as room
-    emit("message_sent", {
-        "status": "success", 
-        "message_id": datetime.utcnow().timestamp(),
-        "timestamp": message.timestamp
-    }, room=sender_id)
-
-@socketio.on("join_chat")
-def handle_join_chat(data):
-    """
-    Handle chat room joining for users to receive messages.
-    
-    This function manages the process of users joining chat rooms to enable
-    targeted message delivery. It sets up the necessary room memberships
-    and optionally loads previous message history.
-    
-    Args:
-        data (dict): Chat data containing chat_partner_id.
+    try:
+        current_user = get_current_user()
+        user_id = current_user['user_id']
         
-    Room Management:
-        1. Extract user_id from connection context
-        2. Validate chat_partner_id from request data
-        3. Join user to their personal room for message delivery
-        4. Optionally load and send previous messages
+        # Verify user is participant in this chat
+        participant = Participant.query.filter_by(
+            chat_id=chat_id,
+            user_id=user_id
+        ).first()
         
-    Chat History:
-        - Previous messages can be loaded from Redis
-        - Messages sent via "previous_messages" event
-        - Limited to recent messages for performance
+        if not participant:
+            return {
+                'success': False,
+                'message': 'غير مصرح بالوصول لهذه المحادثة'
+            }, 403
         
-    Room Strategy:
-        - Each user joins a room named after their user_id
-        - Enables direct message delivery to specific users
-        - Supports both one-to-one and group messaging patterns
-    """
-    user_id = request.args.get("user_id")
-    chat_partner_id = data.get("chat_partner_id")
-    
-    if user_id and chat_partner_id:
-        # Join room named after user_id to allow direct message delivery
-        socketio.join_room(user_id)
-        logger.info(f"User {user_id} joined room {user_id}")
+        # Get query parameters
+        page = request.args.get('page', 1, type=int)
+        per_page = min(request.args.get('per_page', 50, type=int), 100)
+        before = request.args.get('before')
         
-        # Can load previous messages from Redis here
-        if redis_client:
-            chat_key = f"chat:{min(user_id, chat_partner_id)}_{max(user_id, chat_partner_id)}"
+        # Try to get recent messages from cache first
+        if page == 1 and not before:
+            cached_messages = redis_manager.get_chat_recent_messages(chat_id, per_page)
+            if cached_messages:
+                return {
+                    'success': True,
+                    'data': {
+                        'messages': cached_messages,
+                        'pagination': {
+                            'page': 1,
+                            'per_page': per_page,
+                            'total': len(cached_messages),
+                            'from_cache': True
+                        }
+                    }
+                }
+        
+        # Get messages from database
+        query = Message.query.filter_by(
+            chat_id=chat_id,
+            is_deleted=False
+        )
+        
+        if before:
             try:
-                messages = [json.loads(msg) for msg in redis_client.lrange(chat_key, 0, -1)]
-                emit("previous_messages", {"messages": messages, "chat_partner_id": chat_partner_id})
-            except Exception as e:
-                logger.error(f"Error loading previous messages: {e}")
-                emit("previous_messages", {"messages": [], "chat_partner_id": chat_partner_id})
+                before_dt = datetime.fromisoformat(before.replace('Z', '+00:00'))
+                query = query.filter(Message.created_at < before_dt)
+            except ValueError:
+                return {
+                    'success': False,
+                    'message': 'تنسيق التاريخ غير صحيح'
+                }, 400
+        
+        messages_paginated = query.order_by(Message.created_at.desc()).paginate(
+            page=page, per_page=per_page, error_out=False
+        )
+        
+        messages = [message.to_dict() for message in reversed(messages_paginated.items)]
+        
+        # Update participant's last read timestamp
+        participant.last_read_at = datetime.utcnow()
+        db.session.commit()
+        
+        logger.info(f"Retrieved {len(messages)} messages for chat {chat_id}, user {user_id}")
+        
+        return {
+            'success': True,
+            'data': {
+                'messages': messages,
+                'pagination': {
+                    'page': messages_paginated.page,
+                    'pages': messages_paginated.pages,
+                    'per_page': messages_paginated.per_page,
+                    'total': messages_paginated.total,
+                    'has_next': messages_paginated.has_next,
+                    'has_prev': messages_paginated.has_prev
+                }
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting messages for chat {chat_id}: {str(e)}")
+        return {
+            'success': False,
+            'message': 'خطأ في جلب الرسائل',
+            'error': str(e)
+        }, 500
 
-@socketio.on("typing_start")
-def handle_typing_start(data):
+@app.route('/api/v1/chats/<chat_id>/messages', methods=['POST'])
+@require_auth
+def send_message(chat_id):
     """
-    Handle typing indicator start events.
+    Send a message to a chat.
     
-    This function manages typing indicators to show when users are actively
-    typing messages, providing real-time feedback for better user experience.
-    
-    Args:
-        data (dict): Typing data containing recipient_id.
+    Path Parameters:
+        chat_id (str): Chat identifier
+        
+    Request Body:
+        content (str): Message content
+        message_type (str): Type of message (text, image, file) - default: text
+        reply_to_id (str): Optional ID of message being replied to
+        
+    Returns:
+        dict: Sent message information
     """
-    user_id = request.args.get("user_id")
-    recipient_id = data.get("recipient_id")
-    
-    if user_id and recipient_id:
-        emit("user_typing", {"user_id": user_id, "typing": True}, room=recipient_id)
+    try:
+        current_user = get_current_user()
+        user_id = current_user['user_id']
+        
+        # Check rate limiting
+        if not redis_manager.check_rate_limit(user_id, 'send_message', 30):
+            return {
+                'success': False,
+                'message': 'تم تجاوز الحد المسموح لإرسال الرسائل'
+            }, 429
+        
+        # Verify user is participant in this chat
+        participant = Participant.query.filter_by(
+            chat_id=chat_id,
+            user_id=user_id
+        ).first()
+        
+        if not participant:
+            return {
+                'success': False,
+                'message': 'غير مصرح بإرسال رسائل في هذه المحادثة'
+            }, 403
+        
+        data = request.get_json()
+        if not data:
+            return {
+                'success': False,
+                'message': 'بيانات الرسالة مطلوبة'
+            }, 400
+        
+        content = data.get('content', '').strip()
+        message_type = data.get('message_type', 'text').strip()
+        reply_to_id = data.get('reply_to_id')
+        
+        # Validate message content
+        is_valid, error_message = validate_message_content(content, message_type)
+        if not is_valid:
+            return {
+                'success': False,
+                'message': error_message
+            }, 400
+        
+        # Validate message type
+        try:
+            message_type_enum = MessageType(message_type)
+        except ValueError:
+            return {
+                'success': False,
+                'message': 'نوع الرسالة غير صحيح'
+            }, 400
+        
+        # Validate reply_to_id if provided
+        if reply_to_id:
+            reply_message = Message.query.filter_by(
+                id=reply_to_id,
+                chat_id=chat_id,
+                is_deleted=False
+            ).first()
+            if not reply_message:
+                return {
+                    'success': False,
+                    'message': 'الرسالة المرجعية غير موجودة'
+                }, 400
+        
+        # Create new message
+        new_message = Message(
+            chat_id=chat_id,
+            sender_id=user_id,
+            content=content,
+            message_type=message_type_enum,
+            reply_to_id=reply_to_id,
+            status=MessageStatus.SENT
+        )
+        
+        db.session.add(new_message)
+        
+        # Update chat's last message timestamp
+        chat = Chat.query.get(chat_id)
+        if chat:
+            chat.last_message_at = datetime.utcnow()
+            chat.updated_at = datetime.utcnow()
+        
+        db.session.commit()
+        
+        # Cache the message
+        message_data = new_message.to_dict()
+        redis_manager.cache_message(message_data)
+        redis_manager.increment_chat_stats(chat_id, 'messages_sent')
+        
+        # Broadcast via WebSocket (handled by WebSocket handlers)
+        # The WebSocket handler will pick this up and broadcast to connected clients
+        
+        logger.info(f"Message {new_message.id} sent by user {user_id} in chat {chat_id}")
+        
+        return {
+            'success': True,
+            'message': 'تم إرسال الرسالة بنجاح',
+            'data': {
+                'message': message_data
+            }
+        }, 201
+        
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error sending message to chat {chat_id}: {str(e)}")
+        return {
+            'success': False,
+            'message': 'خطأ في إرسال الرسالة',
+            'error': str(e)
+        }, 500
 
-@socketio.on("typing_stop")
-def handle_typing_stop(data):
-    """
-    Handle typing indicator stop events.
-    
-    This function manages the end of typing indicators when users stop
-    typing or send their messages.
-    
-    Args:
-        data (dict): Typing data containing recipient_id.
-    """
-    user_id = request.args.get("user_id")
-    recipient_id = data.get("recipient_id")
-    
-    if user_id and recipient_id:
-        emit("user_typing", {"user_id": user_id, "typing": False}, room=recipient_id)
+# Error handlers
+@app.errorhandler(404)
+def not_found(error):
+    return {
+        'success': False,
+        'message': 'الصفحة غير موجودة',
+        'error': 'Not found'
+    }, 404
 
-if __name__ == "__main__":
-    """
-    Run the messaging service application.
+@app.errorhandler(500)
+def internal_error(error):
+    db.session.rollback()
+    return {
+        'success': False,
+        'message': 'خطأ داخلي في الخادم',
+        'error': 'Internal server error'
+    }, 500
+
+if __name__ == '__main__':
+    port = int(os.getenv('PORT', 8004))
+    logger.info(f"Starting Naebak Messaging Service on port {port}")
     
-    This starts the Flask-SocketIO server with the configured host, port,
-    and debug settings. The server handles both HTTP and WebSocket connections
-    for the messaging functionality.
-    """
-    socketio.run(app, host="0.0.0.0", port=config.PORT, debug=config.DEBUG)
+    # Run with SocketIO
+    socketio.run(
+        app,
+        host='0.0.0.0',
+        port=port,
+        debug=app.config['DEBUG'],
+        allow_unsafe_werkzeug=True
+    )
