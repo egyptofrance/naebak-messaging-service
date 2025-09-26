@@ -584,7 +584,7 @@ def internal_error(error):
     }, 500
 
 if __name__ == '__main__':
-    port = int(os.getenv('PORT', 8004))
+    port = int(os.getenv('PORT', 8002))
     logger.info(f"Starting Naebak Messaging Service on port {port}")
     
     # Run with SocketIO
