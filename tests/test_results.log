@@ -22,3 +22,27 @@
 2025-09-26 04:53:51,283 - INFO - 📄 Detailed results saved to /home/ubuntu/naebak-messaging-service/tests/test_results.json
 2025-09-26 04:53:51,283 - INFO - 📋 Summary report saved to /home/ubuntu/naebak-messaging-service/tests/test_summary.md
 2025-09-26 04:53:51,283 - INFO - ============================================================
+2025-09-26 05:23:22,978 - INFO - 🌐 Starting Naebak Messaging Service Tests
+2025-09-26 05:23:22,978 - INFO - ============================================================
+2025-09-26 05:23:22,978 - INFO - ✅ File Structure: All required files present: 7/7
+2025-09-26 05:23:23,007 - INFO - ✅ Python Syntax: All 13 Python files have valid syntax
+2025-09-26 05:23:23,097 - INFO - ✅ Flask Dependencies: All key dependencies available: 3 modules
+2025-09-26 05:23:23,097 - INFO - ✅ Gateway Configuration: Configuration elements found: ['Config class defined', 'Secret key configuration', 'Debug configuration']
+2025-09-26 05:23:23,097 - INFO - ✅ Routing System: Routing features found: ['Route handling', 'Load balancing', 'Health checking', 'Service discovery']
+2025-09-26 05:23:23,097 - INFO - ✅ Security Middleware: Security features found: ['JWT authentication', 'Rate limiting', 'Authentication middleware', 'Request validation', 'Encryption/Hashing']
+2025-09-26 05:23:23,098 - INFO - ✅ Main Gateway App: Gateway app features: ['Flask app initialization', 'Route definitions', 'CORS configuration', 'Main execution block', 'Service integration']
+2025-09-26 05:23:23,098 - WARNING - ⚠️  Startup Script: Basic startup features: ['Main execution block', 'Gateway import', 'Host/Port configuration']
+2025-09-26 05:23:23,101 - WARNING - ⚠️  Code Quality: Quality score: 63.0%. Metrics: {'total_lines': 5140, 'python_files': 10, 'docstrings': 268, 'comments': 400, 'functions': 179, 'classes': 44}
+2025-09-26 05:23:23,101 - INFO - ============================================================
+2025-09-26 05:23:23,101 - INFO - 📋 GATEWAY SERVICE TEST SUMMARY
+2025-09-26 05:23:23,101 - INFO - ============================================================
+2025-09-26 05:23:23,101 - INFO - 🌐 Service: naebak-messaging-service
+2025-09-26 05:23:23,101 - INFO - 📅 Timestamp: 2025-09-26T05:23:22.978259
+2025-09-26 05:23:23,101 - INFO - 📊 Total Tests: 9
+2025-09-26 05:23:23,101 - INFO - ✅ Passed: 7
+2025-09-26 05:23:23,101 - INFO - ❌ Failed: 0
+2025-09-26 05:23:23,101 - INFO - 📈 Success Rate: 77.8%
+2025-09-26 05:23:23,101 - INFO - 🎯 Service Status: READY
+2025-09-26 05:23:23,102 - INFO - 📄 Detailed results saved to /home/ubuntu/naebak-messaging-service/tests/test_results.json
+2025-09-26 05:23:23,102 - INFO - 📋 Summary report saved to /home/ubuntu/naebak-messaging-service/tests/test_summary.md
+2025-09-26 05:23:23,102 - INFO - ============================================================
